@@ -42,8 +42,8 @@ git_sparse_clone openwrt-18.06 https://github.com/immortalwrt/luci applications/
 
 # 科学上网插件
 #git clone --depth=1 -b main https://github.com/fw876/helloworld package/luci-app-ssr-plus
-#git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall-packages package/openwrt-passwall
-#git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall package/luci-app-passwall
+git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall-packages package/openwrt-passwall-packages
+git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall package/luci-app-passwall
 #git clone --depth=1 https://github.com/xiaorouji/openwrt-passwall2 package/luci-app-passwall2
 #git_sparse_clone master https://github.com/vernesong/OpenClash luci-app-openclash
 
@@ -121,6 +121,39 @@ find package/luci-theme-*/* -type f -name '*luci-theme-*' -print -exec sed -i '/
 # sed -i 's/services/vpn/g' feeds/luci/applications/luci-app-v2ray-server/luasrc/controller/*.lua
 # sed -i 's/services/vpn/g' feeds/luci/applications/luci-app-v2ray-server/luasrc/model/cbi/v2ray_server/*.lua
 # sed -i 's/services/vpn/g' feeds/luci/applications/luci-app-v2ray-server/luasrc/view/v2ray_server/*.htm
+
+
+# ==========================================
+# 自动更新 Xray-core 为 GitHub 最新版本
+# ==========================================
+echo "开始更新 Xray-core..."
+# 抓取 Xray 最新 release 的版本号 (如 1.8.8)
+XRAY_VER=$(curl -sL "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | awk -F '"' '/tag_name/{print $4}' | sed 's/v//g')
+# 查找 xray-core 的 Makefile 路径
+XRAY_MK=$(find package feeds -maxdepth 4 -type f -wholename "*/xray-core/Makefile" | head -n 1)
+if [ -n "$XRAY_MK" ] && [ -n "$XRAY_VER" ]; then
+    echo "找到 Xray-core Makefile: $XRAY_MK，准备更新至 $XRAY_VER"
+    # 替换版本号
+    sed -i "s/PKG_VERSION:=.*/PKG_VERSION:=$XRAY_VER/g" "$XRAY_MK"
+    # 将哈希校验设置为 skip (跳过校验，否则新版源码哈希对不上会报错)
+    sed -i "s/PKG_HASH:=.*/PKG_HASH:=skip/g" "$XRAY_MK"
+fi
+
+# ==========================================
+# 自动更新 Sing-box 为 GitHub 最新版本
+# ==========================================
+echo "开始更新 Sing-box..."
+# 抓取 Sing-box 最新 release 的版本号 (去除前缀 v)
+SB_VER=$(curl -sL "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | awk -F '"' '/tag_name/{print $4}' | sed 's/v//g')
+SB_MK=$(find package feeds -maxdepth 4 -type f -wholename "*/sing-box/Makefile" | head -n 1)
+if [ -n "$SB_MK" ] && [ -n "$SB_VER" ]; then
+    echo "找到 Sing-box Makefile: $SB_MK，准备更新至 $SB_VER"
+    # 替换版本号
+    sed -i "s/PKG_VERSION:=.*/PKG_VERSION:=$SB_VER/g" "$SB_MK"
+    # 跳过哈希校验
+    sed -i "s/PKG_HASH:=.*/PKG_HASH:=skip/g" "$SB_MK"
+fi
+
 
 ./scripts/feeds update -a
 ./scripts/feeds install -a
