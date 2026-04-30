@@ -109,6 +109,9 @@ jobs:
         ./scripts/feeds install -a
   
     - name: Load Custom Configuration(加载自定义配置)
+      # 在此步骤声明环境变量，供该步骤内运行的所有脚本使用
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         [ -e files ] && mv files $OPENWRT_PATH/files
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
