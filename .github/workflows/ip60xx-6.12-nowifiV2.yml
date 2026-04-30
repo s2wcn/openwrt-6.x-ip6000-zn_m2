@@ -5,6 +5,16 @@ on:
   schedule:
     - cron: 0 19 * * *
 
+# 并发策略：当有新任务触发时，自动取消进行中的旧任务，节约 Action 分钟数
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 明确赋予仓库写入权限，确保 Release 和 Tag 可以正常操作
+permissions:
+  contents: write
+  actions: write
+
 env:
   REPO_URL: https://github.com/LiBwrt/openwrt-6.x.git
   REPO_BRANCH: main-nss
@@ -57,8 +67,9 @@ jobs:
         temp-reserve-mb: 100
         root-reserve-mb: 1024
 
+    # 升级 checkout 至 v4 稳定版
     - name: Checkout
-      uses: actions/checkout@main
+      uses: actions/checkout@v4
 
     - name: Clone Source Code(克隆源代码)
       run: |
@@ -105,11 +116,12 @@ jobs:
         cd $OPENWRT_PATH
         $GITHUB_WORKSPACE/$DIY_SCRIPT
 
+    # 增加网络波动时的失败重试单线程下载机制
     - name: Download DL Package(下载DL软件包)
       run: |
         cd $OPENWRT_PATH
         make defconfig
-        make download -j8
+        make download -j8 || make download -j1 V=s
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
@@ -128,12 +140,14 @@ jobs:
       if: (!cancelled())
       run: df -hT
 
+    # 升级 v4，并设置 7 天自动销毁，节约仓库容量
     - name: Upload Bin Directory(上传固件)
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      uses: actions/upload-artifact@main
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
         path: ${{ env.OPENWRT_PATH }}/bin
+        retention-days: 7
 
     - name: Organize Files(整理文件)
       if: steps.compile.outputs.status == 'success'
@@ -141,17 +155,18 @@ jobs:
         cd $OPENWRT_PATH/bin/targets/*/*
         cat sha256sums
         cp $OPENWRT_PATH/.config build.config
-        # mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages
         tar -zcf Packages.tar.gz packages
         rm -rf packages feeds.buildinfo version.buildinfo
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
+    # 升级 v4，并设置 7 天自动销毁
     - name: Upload Firmware To Artifact(将固件上传到Artifact)
       if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
-      uses: actions/upload-artifact@main
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE_PATH }}
+        retention-days: 7
 
     - name: Upload Firmware To Release(发布固件)
       if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
@@ -180,7 +195,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # 获取属于此固件的所有 Release，跳过前 7 个最新发布，循环删除其余旧版本
         releases=$(gh release list --limit 100 | grep "${FIRMWARE_TAG}-" | cut -f3)
         count=0
         for tag in $releases; do
