@@ -113,8 +113,23 @@ if [ -n "$XRAY_MK" ] && [ -n "$XRAY_VER" ]; then
     echo "找到 Xray-core Makefile: $XRAY_MK，准备更新至 $XRAY_VER"
     # 替换版本号
     sed -i "s/PKG_VERSION:=.*/PKG_VERSION:=$XRAY_VER/g" "$XRAY_MK"
-    # 将哈希校验设置为 skip (跳过校验，否则新版源码哈希对不上会报错)
+    # 将哈希校验设置为 skip
     sed -i "s/PKG_HASH:=.*/PKG_HASH:=skip/g" "$XRAY_MK"
+fi
+
+# ==========================================
+# 自动更新 Sing-box 为 GitHub 最新版本
+# ==========================================
+echo "开始更新 Sing-box..."
+# 抓取 Sing-box 最新 release 的版本号 (去除前缀 v)
+SB_VER=$(curl -sL "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | awk -F '"' '/tag_name/{print $4}' | sed 's/v//g')
+SB_MK=$(find package feeds -maxdepth 4 -type f -wholename "*/sing-box/Makefile" | head -n 1)
+if [ -n "$SB_MK" ] && [ -n "$SB_VER" ]; then
+    echo "找到 Sing-box Makefile: $SB_MK，准备更新至 $SB_VER"
+    # 替换版本号
+    sed -i "s/PKG_VERSION:=.*/PKG_VERSION:=$SB_VER/g" "$SB_MK"
+    # 跳过哈希校验
+    sed -i "s/PKG_HASH:=.*/PKG_HASH:=skip/g" "$SB_MK"
 fi
 
 # 移除冗余的 update -a，直接 install，节省编译时间和防止网络错误
