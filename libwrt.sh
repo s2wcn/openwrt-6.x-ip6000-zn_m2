@@ -136,5 +136,10 @@ UPDATE_PACKAGE "passwall-packages" "Openwrt-Passwall/openwrt-passwall-packages" 
 UPDATE_PACKAGE "passwall" "Openwrt-Passwall/openwrt-passwall" "main" "pkg"
 
 
+UPDATE_VERSION "sing-box"
+UPDATE_VERSION "tailscale"
+UPDATE_VERSION "xray-core"
+
+
 # 移除冗余的 update -a，直接 install，节省编译时间和防止网络错误
 ./scripts/feeds install -a
