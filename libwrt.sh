@@ -132,5 +132,9 @@ if [ -n "$SB_MK" ] && [ -n "$SB_VER" ]; then
     sed -i "s/PKG_HASH:=.*/PKG_HASH:=skip/g" "$SB_MK"
 fi
 
+UPDATE_PACKAGE "passwall-packages" "Openwrt-Passwall/openwrt-passwall-packages" "main"
+UPDATE_PACKAGE "passwall" "Openwrt-Passwall/openwrt-passwall" "main" "pkg"
+
+
 # 移除冗余的 update -a，直接 install，节省编译时间和防止网络错误
 ./scripts/feeds install -a
