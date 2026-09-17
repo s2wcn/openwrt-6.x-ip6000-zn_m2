@@ -226,6 +226,101 @@ else
 fi
 
 # ------------------------------------------------------------------------------
+# 4b. Go 工具链兼容性守门（关键：这是 2026-09 实测会真实编译失败的点）
+#
+# 背景（均已实测确认）：
+#   - immortalwrt/packages@openwrt-25.12 的 lang/golang 目录只有 golang1.26，
+#     **没有 golang1.27** → 本分支无法通过设置切换 Go 版本
+#   - golang-package.mk 里硬编码了 GOTOOLCHAIN=local → 用 env 覆盖 GOTOOLCHAIN=auto 无效
+#   - Xray-core 自 26.9.8 起 go.mod 要求 go >= 1.27，直接用必然失败：
+#       go: ../../go.mod requires go >= 1.27 (running go 1.26.8; GOTOOLCHAIN=local)
+#       ERROR: package/openwrt-passwall-packages/xray-core failed to build.
+#   因此这里在编译前主动把 Xray 回退到"最后一个 go.mod 要求 <= 1.26"的版本。
+#
+# 实测分界（读取各 tag 的 go.mod）：
+#     26.9.9 / 26.9.8  -> go >= 1.27   ✗ 编译失败
+#     26.7.28 / 26.7.11 / 26.6.27 ... -> go >= 1.26   ✓
+# ------------------------------------------------------------------------------
+GO_TOOLCHAIN_MAX="1.26"        # feed 能提供的 Go 上限（实测只有 golang1.26）
+XRAY_GO_SAFE_VER="26.7.28"     # 最后一个兼容 Go 1.26 的版本
+XRAY_GO_SAFE_HASH="a9afe86349c7bd3e6cae60125e62a5ada09d102e1a2760623e77c24a84dbfb46"
+# ↑ 该哈希为 codeload tarball 的 sha256，已实测校验：
+#   curl -sL https://codeload.github.com/XTLS/Xray-core/tar.gz/v26.7.28 | sha256sum
+#   且解包后 go.mod 确认为 "go 1.26"。
+
+# 取 go.mod 的 go 指令版本。失败返回 1。
+# 实现要点（两个坑都避开）：
+#   1. 不能用 `curl ... | awk '{print; exit}'`：awk 提前 exit 会让 curl 收到 EPIPE(错误 23)，
+#      pipefail 下整个管道判失败 → 明明成功却返回失败。
+#   2. 不用 mktemp 落盘：某些环境（MSYS/受限 TMPDIR）curl -o 到 mktemp 路径同样报错误 23。
+#   改为：先用命令替换完整取回内容，再用 bash 内建 while-read 解析（无管道、无临时文件）。
+go_mod_requirement() {
+  local repo="$1" tag="$2" out go_ver="" k v
+  out=$(curl -fsSL --retry 3 --retry-delay 3 --max-time 30 \
+        "https://raw.githubusercontent.com/${repo}/${tag}/go.mod") || return 1
+  while read -r k v _; do
+    [ "$k" = "go" ] || continue
+    go_ver="${v//$'\r'/}"     # 去掉可能的 CR
+    break
+  done <<< "$out"
+  [[ "$go_ver" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || return 1
+  printf '%s' "$go_ver"
+}
+
+# Go 版本比较：$1 > $2 ?
+# 先归一化到 major.minor 再比：go.mod 可能写 "go 1.25.5" 这类补丁级指令，
+# 而工具链是 1.26.8，直接按三段比会把"同系列更新"误判成"不兼容"而错误回退。
+version_gt() {
+  local a b
+  a="$(awk -F. '{print $1"."$2}' <<< "$1")"
+  b="$(awk -F. '{print $1"."$2}' <<< "$2")"
+  [ "$a" != "$b" ] || return 1
+  [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)" = "$b" ]
+}
+
+log "检查 Go 工具链兼容性（feed 上限 go ${GO_TOOLCHAIN_MAX}）..."
+
+# --- xray-core：有预设兼容版本，超限自动回退 ---
+XRAY_MK="${PKG_CORE}/xray-core/Makefile"
+XRAY_CUR="$(pkg_version "$XRAY_MK")"
+[ -n "$XRAY_CUR" ] || die "未能读取 xray-core 版本"
+XRAY_NEED="$(go_mod_requirement "XTLS/Xray-core" "v${XRAY_CUR}" || true)"
+
+if [ -z "$XRAY_NEED" ]; then
+  warn "无法读取 Xray v${XRAY_CUR} 的 go.mod 要求（网络/限流），保守回退到 ${XRAY_GO_SAFE_VER}"
+fi
+
+if [ -z "$XRAY_NEED" ] || version_gt "$XRAY_NEED" "$GO_TOOLCHAIN_MAX"; then
+  if [ "$XRAY_CUR" = "$XRAY_GO_SAFE_VER" ]; then
+    log "Xray-core 已是兼容版本 ${XRAY_GO_SAFE_VER}"
+  else
+    log "Xray-core ${XRAY_CUR} 需要 go ${XRAY_NEED:-未知} > ${GO_TOOLCHAIN_MAX}，回退到 ${XRAY_GO_SAFE_VER}"
+    sed -i -e "s/^PKG_VERSION[[:space:]]*:=.*/PKG_VERSION:=${XRAY_GO_SAFE_VER}/" \
+           -e "s/^PKG_HASH[[:space:]]*:=.*/PKG_HASH:=${XRAY_GO_SAFE_HASH}/" "$XRAY_MK"
+    grep -qx "PKG_VERSION:=${XRAY_GO_SAFE_VER}" "$XRAY_MK" \
+      || die "Xray-core 回退写入失败（Makefile: $XRAY_MK）"
+    # 回退后复核，确保目标版本确实兼容（防止常量过期）
+    after="$(go_mod_requirement "XTLS/Xray-core" "v${XRAY_GO_SAFE_VER}" || true)"
+    if [ -n "$after" ] && version_gt "$after" "$GO_TOOLCHAIN_MAX"; then
+      die "回退目标 ${XRAY_GO_SAFE_VER} 仍要求 go ${after}，常量已过期，请更新 XRAY_GO_SAFE_VER/HASH"
+    fi
+  fi
+else
+  log "Xray-core ${XRAY_CUR} 需要 go ${XRAY_NEED}，兼容（<= ${GO_TOOLCHAIN_MAX}）"
+fi
+
+# --- sing-box：无预设回退版本，超限则大声失败，绝不静默编出坏固件 ---
+SB_MK="${PKG_CORE}/sing-box/Makefile"
+SB_CUR="$(pkg_version "$SB_MK")"
+[ -n "$SB_CUR" ] || die "未能读取 sing-box 版本"
+SB_NEED="$(go_mod_requirement "SagerNet/sing-box" "v${SB_CUR}" || true)"
+if [ -n "$SB_NEED" ] && version_gt "$SB_NEED" "$GO_TOOLCHAIN_MAX"; then
+  die "sing-box ${SB_CUR} 要求 go ${SB_NEED} > ${GO_TOOLCHAIN_MAX}，且未预设兼容回退版本。"\
+"请升级 feed 的 golang 或手动 pin sing-box 版本后再编译"
+fi
+[ -n "$SB_NEED" ] && log "sing-box ${SB_CUR} 需要 go ${SB_NEED}，兼容"
+
+# ------------------------------------------------------------------------------
 # 5. 版本一致性校验 + 输出（供 Release 说明使用，避免手写漂移）
 # ------------------------------------------------------------------------------
 XRAY_VER="$(pkg_version "${PKG_CORE}/xray-core/Makefile")"
